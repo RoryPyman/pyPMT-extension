@@ -35,6 +35,33 @@ def str_repr(f, t=None):
     return s
 
 @lru_cache()
+def str_repr_axiom(axiom):
+    """!
+    Given an axiom generate a unique string representation
+    based on its preconditions and effects.
+
+    Note: Axioms don't have names in UP...
+    
+    @param axiom: The axiom
+    @returns: String representation of the axiom
+    """
+    parts = []
+    for pre in axiom.preconditions:
+        parts.append(str(pre))
+    for eff in axiom.effects:
+        parts.append(str(eff.fluent))
+    
+    axiom_str = "_".join(parts)
+    
+    # Hash it to keep it short
+    import hashlib
+    axiom_hash = hashlib.md5(axiom_str.encode()).hexdigest()[:8]
+    
+    s = f"axiom_{axiom_hash}"    
+    return s
+
+
+@lru_cache()
 def varstr_repr(var):
     """! 
     given a z3 variable return the variable name. 
