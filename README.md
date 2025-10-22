@@ -34,6 +34,17 @@ pypmtcli dump --encoding seq --domain domain.pddl --problem problem.pddl --outpu
 
 pyPMT can also be used as a library. See [quick-start examples](https://github.com/pyPMT/quick-start) for more details.
 
+### Running pyPMT with axioms
+
+
+Should be run the same as shown above, from the CLI, like so:
+
+```sh
+pypmtcli solve --encoding seq --domain domain.pddl --problem problem.pddl
+```
+
+Some example axiom problems and domains are provided in the  [UP fork] (https://github.com/RoryPyman/unified-planning-extension/tree/extensions) at experiments/axioms/axiom-domain-{1,2} and experiments/axioms/axiom-problem-{1,2}
+
 ## Documentation
 
 Further documentation is available [here](https://github.com/pyPMT/pyPMT/blob/main/refman.pdf).
