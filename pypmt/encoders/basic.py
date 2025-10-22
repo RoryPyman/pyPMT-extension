@@ -266,7 +266,7 @@ class EncoderGrounded(Encoder):
         self.formula['initial'] = z3.And(self.encode_initial_state())  # Encode initial state axioms
         self.formula['goal']    = z3.And(self.encode_goal_state())  # Encode goal state axioms
         self.formula['actions'] = z3.And(self.encode_actions())  # Encode universal axioms
-        self.formula['axioms'] = z3.And(self.encode_axioms())
+        self.formula['axioms'] = z3.And(self.encode_axioms()) if len(self.task.axioms) > 0 else z3.BoolVal(True, ctx=self.ctx)
         self.formula['frame_action'] = z3.And(self.encode_frame_action())
         self.formula['frame_axiom'] = z3.And(self.encode_frame_axiom())
 
