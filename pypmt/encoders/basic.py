@@ -12,7 +12,7 @@ from unified_planning.plans import SequentialPlan
 from unified_planning.plans import ActionInstance
 
 from pypmt.encoders.base import Encoder
-from pypmt.encoders.utilities import str_repr, flattern_list
+from pypmt.encoders.utilities import str_repr, str_repr_axiom, flattern_list
 from pypmt.modifiers.modifierLinear import LinearModifier
 from pypmt.modifiers.modifierParallel import ParallelModifier, MutexSemantics
 
@@ -32,6 +32,16 @@ class EncoderGrounded(Encoder):
         - sequential encoding: Kautz & Selman 1992 for the original encoding
         - ForAll semantics: this implements a generalisation for numeric
         planning of the original work in Kautz & Selman 1996 
+
+    22/10 - RP
+    This encoder has been updated to encode axioms, firing them as triggers after each axiom.
+    The updated overall structure of the encodign is
+    Timestep structure:
+    - t=0: Initial state
+    - Odd timesteps (1,3,5...): Actions execute
+    - Even timesteps (2,4,6...): Axioms fire (if their preconditions hold)
+    
+    State flow: state(0) → action(1) → state(1) → axioms(2) → state(2) → action(3) → state(3)...
     """
 
     def __init__(self, name, task, modifier, parallel):
@@ -50,13 +60,22 @@ class EncoderGrounded(Encoder):
         self.z3_actions_to_up = dict() # multiple z3 vars point to one grounded fluent
         self.up_actions_to_z3 = defaultdict(list)
 
+        # this is a mapping from the UP ground axioms to z3 and back
+        self.z3_axioms_to_up = dict()
+        self.up_axioms_to_z3 = defaultdict(list)
+
+
         # mapping from up fluent to Z3 var
         self.up_fluent_to_z3 = defaultdict(list)
 
         # frame index, indexing what actions can modify which fluent
-        self.frame_add = defaultdict(list)
-        self.frame_del = defaultdict(list)
-        self.frame_num = defaultdict(list)
+        self.frame_add_action = defaultdict(list)
+        self.frame_del_action = defaultdict(list)
+        self.frame_num_action = defaultdict(list)
+        
+        self.frame_add_axiom = defaultdict(list)
+        self.frame_del_axiom = defaultdict(list)
+        self.frame_num_axiom = defaultdict(list)
 
         # Store the "raw" formula that we will later instantiate
         self.formula  = defaultdict(list)
@@ -71,7 +90,7 @@ class EncoderGrounded(Encoder):
         return self.formula_length
 
     def _initialize_fluents(self, _task, _fluentslist):
-        initialized_fluents  = list(_task.explicit_initial_values.keys())
+        initialized_fluents = list(_task.explicit_initial_values.keys())
         unintialized_fluents = list(filter(lambda x: not x in initialized_fluents, _fluentslist))
         for fe in unintialized_fluents:
             if fe.type.is_bool_type():
@@ -90,29 +109,64 @@ class EncoderGrounded(Encoder):
         @param t: the timestep we are interested in
         @returns: the corresponding Z3 variable
         """
-        return self.up_actions_to_z3[name][t]
+        # Actions are at odd timesteps, so map givem timestep to actual timestep
+        actual_t = 2 * t + 1
+        if actual_t >= len(self.up_actions_to_z3[name]):
+            return None
+        return self.up_actions_to_z3[name][actual_t]
+    
+    def get_axiom_var(self, name, t):
+        """!
+        Given a str representation of a fluent/axiom and a timestep,
+        returns the respective Z3 var.
+
+        @param name: str representation of a fluent or axiom
+        @param t: the timestep we are interested in
+        @returns: the corresponding Z3 variable
+        """
+        # Axioms are at even timesteps (after t=0), so map logical step to actual timestep
+        actual_t = 2 * t + 2
+        if actual_t >= len(self.up_axioms_to_z3[name]):
+            return None
+        return self.up_axioms_to_z3[name][actual_t]
 
     def _populate_modifiers(self):
         """!
-        Populates an index on which grounded actions can modify which fluents.
+        Populates an index on which grounded actions & axioms can modify which fluents.
         These are used afterwards for encoding the frame.
         """
+        # Index what actions can modify
         for action in self.task.actions:
             str_action = str_repr(action)
             for effect in action.effects:
-               var_modified = str_repr(effect.fluent)
-               condition = effect.condition # get the condition of the effect
-               if effect.value.is_true(): # boolean effect
-                   self.frame_add[var_modified].append((condition,str_action))
-               elif effect.value.is_false():
-                   self.frame_del[var_modified].append((condition, str_action))
-               else: # is a numeric or complex expression
-                   self.frame_num[var_modified].append((condition, str_action))
+                var_modified = str_repr(effect.fluent)
+                condition = effect.condition # get the condition of the effect
+                if effect.value.is_true(): # boolean effect
+                    self.frame_add_action[var_modified].append((condition, str_action))
+                elif effect.value.is_false():
+                    self.frame_del_action[var_modified].append((condition, str_action))
+                else: # is a numeric or complex expression
+                    self.frame_num_action[var_modified].append((condition, str_action))
+        
+        # Index what axioms can modify
+        for axiom in self.task.axioms:
+            str_axiom = str_repr_axiom(axiom)
+            for effect in axiom.effects:
+                var_modified = str_repr(effect.fluent)
+                # Axiom conditions are their preconditions
+                condition = z3.BoolVal(True, ctx=self.ctx)  # Will be handled in frame encoding
+                if effect.value.is_true():
+                    self.frame_add_axiom[var_modified].append((condition, str_axiom))
+                elif effect.value.is_false():
+                    self.frame_del_axiom[var_modified].append((condition, str_axiom))
+                else:
+                    self.frame_num_axiom[var_modified].append((condition, str_axiom))
+
 
     def extract_plan(self, model, horizon):
         """!
         Given a model of the encoding generated by this class and its horizon,
-        extract a plan from it.
+        extract a plan from it. Only actions go in the plan.
         @returns: an instance of a SMTSequentialPlan
         """
         plan = SequentialPlan([])
@@ -121,10 +175,12 @@ class EncoderGrounded(Encoder):
             # Linearise plan taking into account step order
             action_map = {action.name: action for action in self}
             for t in range(0, horizon + 1):
+                actual_t = 2 * t + 1  # Convert to actual timestep
                 active_actions = set()
                 for action in self:
-                    if z3.is_true(model[self.up_actions_to_z3[action.name][t]]):
-                        active_actions.add(action.name)
+                    if actual_t < len(self.up_actions_to_z3[action.name]):
+                        if z3.is_true(model[self.up_actions_to_z3[action.name][actual_t]]):
+                            active_actions.add(action.name)
                 if len(self.modifier.graph.nodes) > 0:
                     sorted_action_names = list(nx.topological_sort(self.modifier.graph.subgraph(active_actions)))[::-1]
                 else:
@@ -134,14 +190,17 @@ class EncoderGrounded(Encoder):
         else:
             ## linearize partial-order plan
             for t in range(0, horizon + 1):
+                actual_t = 2 * t + 1
                 for action in self:
-                    if z3.is_true(model[self.up_actions_to_z3[action.name][t]]):
-                        plan.actions.append(ActionInstance(action))
+                    if actual_t < len(self.up_actions_to_z3[action.name]):
+                        if z3.is_true(model[self.up_actions_to_z3[action.name][actual_t]]):
+                            plan.actions.append(ActionInstance(action))
         return SMTSequentialPlan(plan, self.task)
 
     def encode(self, t):
         """!
-        Builds and returns the formulas for a single transition step (from t to t+1).
+        Encode formulas for one logical planning step, an action and an axiom.
+        Each logical step creates 2 'actual' timesteps: one for the action, one for the axioms.
         @param t: the current timestep we want the encoding for
         @returns: A dict with the different parts of the formula encoded
         """
@@ -149,27 +208,45 @@ class EncoderGrounded(Encoder):
             self.base_encode()
             return deepcopy(self.formula)
 
-        self.create_variables(t+1) # we create another layer
+        # Create variables for next action step and axiom step
+        action_t = 2 * t + 1
+        axiom_t = action_t + 1
+        
+        self.create_variables(action_t)   # Action timestep
+        self.create_variables(axiom_t)    # Axiom timestep
 
+        # Build substitutions for the new timesteps
         list_substitutions_actions = []
+        list_substitutions_axioms = []
         list_substitutions_fluents = []
+        
         for key in self.up_actions_to_z3.keys():
             list_substitutions_actions.append(
-                (self.up_actions_to_z3[key][0],
-                 self.up_actions_to_z3[key][t]))
+                (self.up_actions_to_z3[key][1],
+                 self.up_actions_to_z3[key][action_t]))
+        for key in self.up_axioms_to_z3.keys():
+            list_substitutions_axioms.append(
+                (self.up_axioms_to_z3[key][2],
+                 self.up_axioms_to_z3[key][axiom_t])
+            )
         for key in self.up_fluent_to_z3.keys():
             list_substitutions_fluents.append(
                 (self.up_fluent_to_z3[key][0],
-                 self.up_fluent_to_z3[key][t]))
+                 self.up_fluent_to_z3[key][action_t-1]))
             list_substitutions_fluents.append(
                 (self.up_fluent_to_z3[key][1],
-                 self.up_fluent_to_z3[key][t + 1]))
+                 self.up_fluent_to_z3[key][action_t]))
+            list_substitutions_fluents.append(
+                (self.up_fluent_to_z3[key][2],
+                 self.up_fluent_to_z3[key][axiom_t]))
  
         encoded_formula = dict()
-        encoded_formula['initial'] = self.formula['initial']
-        encoded_formula['goal']    = z3.substitute(self.formula['goal'], list_substitutions_fluents)
-        encoded_formula['actions'] = z3.substitute(self.formula['actions'], list_substitutions_fluents + list_substitutions_actions)
-        encoded_formula['frame']   = z3.substitute(self.formula['frame'], list_substitutions_fluents + list_substitutions_actions)
+        encoded_formula['initial']      = self.formula['initial']
+        encoded_formula['goal']         = z3.substitute(self.formula['goal'], list_substitutions_fluents)
+        encoded_formula['actions']      = z3.substitute(self.formula['actions'], list_substitutions_fluents + list_substitutions_actions)
+        encoded_formula['axioms']       = z3.substitute(self.formula['axioms'], list_substitutions_fluents + list_substitutions_axioms)
+        encoded_formula['frame_action'] = z3.substitute(self.formula['frame_action'], list_substitutions_fluents + list_substitutions_actions)
+        encoded_formula['frame_axiom']  = z3.substitute(self.formula['frame_axiom'], list_substitutions_fluents + list_substitutions_axioms)
         if 'sem' in self.formula.keys():
             encoded_formula['sem'] = z3.substitute(self.formula['sem'], list_substitutions_actions)
         return encoded_formula
@@ -183,12 +260,16 @@ class EncoderGrounded(Encoder):
         # create vars for first transition
         self.create_variables(0)
         self.create_variables(1)
+        self.create_variables(2)
         self._populate_modifiers() # do indices
 
         self.formula['initial'] = z3.And(self.encode_initial_state())  # Encode initial state axioms
-        self.formula['goal']    = z3.And(self.encode_goal_state(0))  # Encode goal state axioms
-        self.formula['actions'] = z3.And(self.encode_actions(0))  # Encode universal axioms
-        self.formula['frame']   = z3.And(self.encode_frame(0))  # Encode explanatory frame axioms
+        self.formula['goal']    = z3.And(self.encode_goal_state())  # Encode goal state axioms
+        self.formula['actions'] = z3.And(self.encode_actions())  # Encode universal axioms
+        self.formula['axioms'] = z3.And(self.encode_axioms())
+        self.formula['frame_action'] = z3.And(self.encode_frame_action())
+        self.formula['frame_axiom'] = z3.And(self.encode_frame_axiom())
+
         execution_semantics = self.encode_execution_semantics()
         if len(execution_semantics) > 0:
             self.formula['sem'] = z3.And(execution_semantics)  # Encode execution semantics (lin/par)
@@ -199,7 +280,7 @@ class EncoderGrounded(Encoder):
 
         @returns: axioms that specify execution semantics.
         """
-        action_vars = list(map(lambda x: x[0], self.up_actions_to_z3.values()))
+        action_vars = [self.up_actions_to_z3[key][1] for key in self.up_actions_to_z3.keys()] #TODO-Axiom: Understand
         return self.modifier.encode(self, action_vars)
 
     def create_variables(self, t):
@@ -211,13 +292,33 @@ class EncoderGrounded(Encoder):
         # increment the formula lenght
         self.formula_length += 1
 
-        # for actions
-        for grounded_action in self.task.actions:
-            key   = str_repr(grounded_action)
-            keyt  = str_repr(grounded_action, t)
-            act_var = z3.Bool(keyt, ctx=self.ctx)
-            self.up_actions_to_z3[key].append(act_var)
-            self.z3_actions_to_up[act_var] = key
+        # Create action variables only at odd timesteps
+        if t % 2 == 1:
+            for grounded_action in self.task.actions:
+                key   = str_repr(grounded_action)
+                keyt  = str_repr(grounded_action, t)
+                act_var = z3.Bool(keyt, ctx=self.ctx)
+                self.up_actions_to_z3[key].append(act_var)
+                self.z3_actions_to_up[act_var] = key
+        else:
+            # Pad with None for even timesteps
+            for grounded_action in self.task.actions:
+                key = str_repr(grounded_action)
+                self.up_actions_to_z3[key].append(None)
+
+        # Create axiom variables only at even timesteps (after t=0)
+        if t > 0 and t % 2 == 0:
+            for grounded_axiom in self.task.axioms:
+                key = str_repr_axiom(grounded_axiom)
+                keyt = f"{key}_t{t}"
+                axiom_var = z3.Bool(keyt, ctx=self.ctx)
+                self.up_axioms_to_z3[key].append(axiom_var)
+                self.z3_axioms_to_up[axiom_var] = key
+        else:
+            # Pad with None for odd timesteps and t=0
+            for grounded_axiom in self.task.axioms:
+                key = str_repr_axiom(grounded_axiom)
+                self.up_axioms_to_z3[key].append(None)
 
         # for fluents
         for fe in self.all_fluents:
@@ -244,23 +345,54 @@ class EncoderGrounded(Encoder):
         
         return initial
 
-    # TODO: remove t, as it is not needed
-    def encode_goal_state(self, t):
+    def encode_goal_state(self):
         """!
         Encodes formula defining goal state
+        22/7 - RP: Updated to remove t as param
 
-        @param t: the timestep
         @returns: Z3 formula asserting propositional and numeric subgoals
         """
         goal = []
         for goal_pred in self.task.goals:
-            goal.append(self._expr_to_z3(goal_pred, t + 1))
+            goal.append(self._expr_to_z3(goal_pred, 2))
         return goal
 
-    # TODO: remove t, as it is not needed
-    def encode_actions(self, t):
+    def encode_axioms(self):
+        """
+        Encode axioms that fire as triggers at even timesteps 
+        Axioms should check preconditions at t=1 and apply effects at t=2.
+
+        pre -> a
+        a -> pre
+
+        @returns: list of Z3 formulas asserting the axioms
+        """
+        axioms = []
+        
+        for grounded_axiom in self.task.axioms:
+            key = str_repr_axiom(grounded_axiom)
+            axiom_var = self.up_axioms_to_z3[key][2]  # Axiom fires at t=2
+            
+            # Preconditions checked at state after action (t=1)
+            axiom_pre = []
+            for pre in grounded_axiom.preconditions:
+                axiom_pre.append(self._expr_to_z3(pre, 1))
+            
+            # Effects applied from t=1 to t=2
+            axiom_eff = []
+            for eff in grounded_axiom.effects:
+                axiom_eff.append(self._expr_to_z3_axiom_effect(eff))
+            
+            axiom_pre = z3.And(axiom_pre) if len(axiom_pre) > 0 else z3.BoolVal(True, ctx=self.ctx)
+            axiom_eff = z3.And(axiom_eff) if len(axiom_eff) > 0 else z3.BoolVal(True, ctx=self.ctx)
+            axioms.append(z3.Implies(axiom_pre, axiom_var, ctx=self.ctx))
+            axioms.append(z3.Implies(axiom_var, axiom_eff, ctx=self.ctx))
+        return axioms
+    
+    def encode_actions(self):
         """!
         Encodes the transition function. That is, the actions.
+        22/7 - RP: t removed as parameter as not needed
         a -> Pre
         a -> Eff
 
@@ -270,58 +402,76 @@ class EncoderGrounded(Encoder):
         actions = []
         for grounded_action in self.task.actions:
             key = str_repr(grounded_action)
-            action_var = self.up_actions_to_z3[key][t]
+            action_var = self.up_actions_to_z3[key][1]
 
             # translate the action precondition
             action_pre = []
             for pre in grounded_action.preconditions:
-                action_pre.append(self._expr_to_z3(pre, t))
+                action_pre.append(self._expr_to_z3(pre, 0))
             # translate the action effect
             action_eff = []
             for eff in grounded_action.effects:
-               action_eff.append(self._expr_to_z3(eff, t))
+               action_eff.append(self._expr_to_z3_action_effect(eff))
 
             # the proper encoding
             action_pre = z3.And(action_pre) if len(action_pre) > 0 else z3.BoolVal(True, ctx=self.ctx)
             actions.append(z3.Implies(action_var, action_pre, ctx=self.ctx))
             action_eff = z3.And(action_eff) if len(action_eff) > 0 else z3.BoolVal(True, ctx=self.ctx)
             actions.append(z3.Implies(action_var, action_eff, ctx=self.ctx))
-        return z3.And(actions)
+        return actions
 
-    # TODO: remove t, as it is not needed
-    def encode_frame(self, t):
-        """!
-        Encodes the explanatory frame axiom
-
-        basically for each fluent, to change in value it means
-        that some action that can make it change has been executed
-        f(x,y,z, t) != f(x,y,z, t+1) -> (a /\\ g(y)) \\/ b \\/ (c /\\ (x > 3))
-        Note conditional effects are embedded in the action. 
-        """
-        frame = [] # the whole frame
-
-        # for each grounded fluent, we say its different from t to t + 1
+    def encode_frame_action(self):
+        """Encode frame axioms for action transitions (t=0 to t=1)."""
+        frame = []
         grounded_up_fluents = [f for f, _ in self.task.initial_values.items()]
+        
         for grounded_fluent in grounded_up_fluents:
-            key    = str_repr(grounded_fluent)
-            var_t  = self.up_fluent_to_z3[key][t]
-            var_t1 = self.up_fluent_to_z3[key][t + 1]
-
-            # for each possible modification
+            key = str_repr(grounded_fluent)
+            var_t0 = self.up_fluent_to_z3[key][0]
+            var_t1 = self.up_fluent_to_z3[key][1]
+            
             or_actions = []
-            or_actions.extend(self.frame_add[key])
-            or_actions.extend(self.frame_del[key])
-            or_actions.extend(self.frame_num[key])
-
-            # simplify the list in case its empty
+            or_actions.extend(self.frame_add_action[key])
+            or_actions.extend(self.frame_del_action[key])
+            or_actions.extend(self.frame_num_action[key])
+            
             if len(or_actions) == 0:
-                who_can_change_fluent = z3.BoolVal(False, ctx=self.ctx)
+                who_can_change = z3.BoolVal(False, ctx=self.ctx)
             else:
-                who_can_change_fluent = z3.Or([
-                     z3.And(self._expr_to_z3(cond, t), self.up_actions_to_z3[x][t]) for (cond, x) in or_actions
-                     ])
+                who_can_change = z3.Or([
+                    z3.And(self._expr_to_z3(cond, 0), self.up_actions_to_z3[x][1])
+                    for (cond, x) in or_actions
+                ])
+            
+            frame.append(z3.Implies(var_t0 != var_t1, who_can_change, ctx=self.ctx))
+        
+        return frame
 
-            frame.append(z3.Implies(var_t != var_t1, who_can_change_fluent, ctx=self.ctx))
+    def encode_frame_axiom(self):
+        """Encode frame axioms for axiom transitions (t=1 to t=2)."""
+        frame = []
+        grounded_up_fluents = [f for f, _ in self.task.initial_values.items()]
+        
+        for grounded_fluent in grounded_up_fluents:
+            key = str_repr(grounded_fluent)
+            var_t1 = self.up_fluent_to_z3[key][1]
+            var_t2 = self.up_fluent_to_z3[key][2]
+            
+            or_axioms = []
+            or_axioms.extend(self.frame_add_axiom[key])
+            or_axioms.extend(self.frame_del_axiom[key])
+            or_axioms.extend(self.frame_num_axiom[key])
+            
+            if len(or_axioms) == 0:
+                who_can_change = z3.BoolVal(False, ctx=self.ctx)
+            else:
+                # For axioms, the condition is implicit in the axiom preconditions
+                who_can_change = z3.Or([
+                    self.up_axioms_to_z3[x][2] for (_, x) in or_axioms
+                ])
+            
+            frame.append(z3.Implies(var_t1 != var_t2, who_can_change, ctx=self.ctx))
+        
         return frame
 
     def _expr_to_z3(self, expr, t, c=None):
@@ -340,17 +490,8 @@ class EncoderGrounded(Encoder):
             return z3.RealVal(expr, ctx=self.ctx)
 
         elif isinstance(expr, Effect): # A UP Effect
-            eff = None
-            if expr.kind == EffectKind.ASSIGN:
-                eff = self._expr_to_z3(expr.fluent, t + 1, c) == self._expr_to_z3(expr.value, t, c)
-            if expr.kind == EffectKind.DECREASE:
-                eff = self._expr_to_z3(expr.fluent, t + 1, c) == self._expr_to_z3(expr.fluent, t, c) - self._expr_to_z3(expr.value, t, c)
-            if expr.kind == EffectKind.INCREASE:
-                eff = self._expr_to_z3(expr.fluent, t + 1, c) == self._expr_to_z3(expr.fluent, t, c) + self._expr_to_z3(expr.value, t, c)
-            if expr.is_conditional():
-                return z3.Implies(self._expr_to_z3(expr.condition, t, c) , eff, ctx=self.ctx)
-            else:
-                return eff
+            # This should not be called for effects anymore
+            raise ValueError("Use _expr_to_z3_action_effect or _expr_to_z3_axiom_effect for effects")
 
         elif isinstance(expr, FNode): # A UP FNode ( can be anything really )
             if expr.is_object_exp(): # A UP object
@@ -389,6 +530,34 @@ class EncoderGrounded(Encoder):
             return z3.RealVal(f"{expr.numerator}/{expr.denominator}", ctx=self.ctx)
         else:
             raise TypeError(f"Unsupported expression: {expr} of type {type(expr)}")
+    
+    def _expr_to_z3_action_effect(self, expr):
+        """Convert action effect (t=0 to t=1)."""
+        eff = None
+        if expr.kind == EffectKind.ASSIGN:
+            eff = self._expr_to_z3(expr.fluent, 1) == self._expr_to_z3(expr.value, 0)
+        elif expr.kind == EffectKind.DECREASE:
+            eff = self._expr_to_z3(expr.fluent, 1) == self._expr_to_z3(expr.fluent, 0) - self._expr_to_z3(expr.value, 0)
+        elif expr.kind == EffectKind.INCREASE:
+            eff = self._expr_to_z3(expr.fluent, 1) == self._expr_to_z3(expr.fluent, 0) + self._expr_to_z3(expr.value, 0)
+        
+        if expr.is_conditional():
+            return z3.Implies(self._expr_to_z3(expr.condition, 0), eff, ctx=self.ctx)
+        return eff
+
+    def _expr_to_z3_axiom_effect(self, expr):
+        """Convert axiom effect (t=1 to t=2)."""
+        eff = None
+        if expr.kind == EffectKind.ASSIGN:
+            eff = self._expr_to_z3(expr.fluent, 2) == self._expr_to_z3(expr.value, 1)
+        elif expr.kind == EffectKind.DECREASE:
+            eff = self._expr_to_z3(expr.fluent, 2) == self._expr_to_z3(expr.fluent, 1) - self._expr_to_z3(expr.value, 1)
+        elif expr.kind == EffectKind.INCREASE:
+            eff = self._expr_to_z3(expr.fluent, 2) == self._expr_to_z3(expr.fluent, 1) + self._expr_to_z3(expr.value, 1)
+        
+        if expr.is_conditional():
+            return z3.Implies(self._expr_to_z3(expr.condition, 1), eff, ctx=self.ctx)
+        return eff
 
 class EncoderSequential(EncoderGrounded):
     """
