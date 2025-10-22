@@ -26,9 +26,10 @@ def compile(task: Problem, compilationlist: list):
     Returns:
         CompiledTask: The compiled task object.
     """
-    task = DeleteThenSetRemover().compile(task).problem # just remove delete-then-set effects
     names = [name for name, _ in compilationlist]
     compilationkinds = [kind for _, kind in compilationlist]
+    print(f"Applying the following compilations: {list(zip(names, compilationkinds))}")
+    task = DeleteThenSetRemover().compile(task).problem # just remove delete-then-set effects
     with Compiler(names=names, compilation_kinds=compilationkinds) as compiler:
         compiled_task = compiler.compile(task)
     return compiled_task
@@ -103,6 +104,7 @@ def generate_schedule(conf:Config):
 
 def solveFile(domainfile:str, problemfile:str, conf:Config, validate_plan:bool=True):
     task = PDDLReader().parse_problem(domainfile, problemfile)
+    print(task)
     return solveUP(task, conf, validate_plan)
 
 def solveUP(task, conf:Config, validate_plan:bool=True):
