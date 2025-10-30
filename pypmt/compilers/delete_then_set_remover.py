@@ -135,12 +135,18 @@ class DeleteThenSetRemover(engines.engine.Engine, CompilerMixin):
         new_problem = problem.clone()
         new_problem.name = f"{self.name}_{problem.name}"
         new_problem.clear_actions()
+        new_problem.clear_axioms()
 
         new_to_old: Dict[Action, Optional[Action]] = {}
         for a in problem.actions:
             fixed_action = self.remove_delete_then_set(a)
             new_problem.add_action(fixed_action)
             new_to_old[fixed_action] = a
+        
+        for ax in problem.axioms:
+            fixed_action = self.remove_delete_then_set(ax)
+            new_problem.add_axiom(fixed_action)
+            new_to_old[fixed_action] = ax
 
         return CompilerResult(
             new_problem, partial(replace_action, map=new_to_old), self.name
