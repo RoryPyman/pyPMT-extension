@@ -139,8 +139,6 @@ class EncoderGrounded(Encoder):
         for action in self.task.actions:
             str_action = str_repr(action)
             for effect in action.effects:
-                print(f"[Basic Encoder] Indexing action effect: {effect}")
-                print(f"[Basic Encoder] Effect fluent type: {effect.fluent.node_type}")
                 var_modified = str_repr(effect.fluent)
                 condition = effect.condition # get the condition of the effect
                 if effect.value.is_true(): # boolean effect
@@ -154,8 +152,6 @@ class EncoderGrounded(Encoder):
         for axiom in self.task.axioms:
             str_axiom = str_repr_axiom(axiom)
             for effect in axiom.effects:
-                print(f"[Basic Encoder] Indexing axiom effect: {effect}")
-                print(f"[Basic Encoder] Effect fluent type: {effect.fluent.node_type}")
                 var_modified = str_repr(effect.fluent)
                 # Axiom conditions are their preconditions
                 condition = z3.BoolVal(True, ctx=self.ctx)  # Will be handled in frame encoding

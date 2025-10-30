@@ -98,7 +98,6 @@ def create_parser():
 
 def process_arguments(args, conf):
     """ gets the parsed command line arguments and sets the config object """
-    print(args)
     if args.verbose:  # set the verbosity level
         conf.set('verbose', args.verbose)
 
