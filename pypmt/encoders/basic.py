@@ -263,16 +263,31 @@ class EncoderGrounded(Encoder):
         self.create_variables(2)
         self._populate_modifiers() # do indices
 
-        self.formula['initial'] = z3.And(self.encode_initial_state())  # Encode initial state axioms
-        self.formula['goal']    = z3.And(self.encode_goal_state())  # Encode goal state axioms
-        self.formula['actions'] = z3.And(self.encode_actions())  # Encode universal axioms
-        self.formula['axioms'] = z3.And(self.encode_axioms()) if len(self.task.axioms) > 0 else z3.BoolVal(True, ctx=self.ctx)
-        self.formula['frame_action'] = z3.And(self.encode_frame_action())
-        self.formula['frame_axiom'] = z3.And(self.encode_frame_axiom())
+        initial_raw = z3.And(self.encode_initial_state())  # Encode initial state axioms
+        goal_raw = z3.And(self.encode_goal_state())  # Encode goal state axioms
+        actions_raw = z3.And(self.encode_actions())  # Encode universal axioms
+        axioms_raw = z3.And(self.encode_axioms()) if len(self.task.axioms) > 0 else z3.BoolVal(True, ctx=self.ctx)
+        frame_action_raw = z3.And(self.encode_frame_action())
+        frame_axiom_raw = z3.And(self.encode_frame_axiom())
+
+        # Translate any ASTs returned from other modules into our Z3 context
+        self.formula['initial'] = self._translate_ast(initial_raw)
+        self.formula['goal'] = self._translate_ast(goal_raw)
+        self.formula['actions'] = self._translate_ast(actions_raw)
+        self.formula['axioms'] = self._translate_ast(axioms_raw)
+        self.formula['frame_action'] = self._translate_ast(frame_action_raw)
+        self.formula['frame_axiom'] = self._translate_ast(frame_axiom_raw)
 
         execution_semantics = self.encode_execution_semantics()
         if len(execution_semantics) > 0:
-            self.formula['sem'] = z3.And(execution_semantics)  # Encode execution semantics (lin/par)
+            # Ensure any ASTs returned by modifiers are in our Z3 context
+            exec_in_ctx = self._translate_ast(execution_semantics)
+            self.formula['sem'] = z3.And(exec_in_ctx)  # Encode execution semantics (lin/par)
+
+        metrics = self.encode_quality_metrics()
+        if metrics:
+            print(metrics)
+            self.formula['metrics'] = [m["z3_var"] for m in metrics]
 
     def encode_execution_semantics(self):
         """!
@@ -330,6 +345,29 @@ class EncoderGrounded(Encoder):
                 self.up_fluent_to_z3[key].append(z3.Bool(keyt, ctx=self.ctx))
             else:
                 raise TypeError
+
+    def _translate_ast(self, obj):
+        """Ensure a Z3 AST (or list/tuple of ASTs) is in this encoder's context.
+
+        If `obj` is a sequence, translate each element recursively. If it's a
+        Z3 AST with a different ctx, translate it into `self.ctx`. Otherwise
+        return it unchanged.
+        """
+        # sequences: translate each element
+        if isinstance(obj, (list, tuple, set)):
+            return [self._translate_ast(x) for x in obj]
+
+        # Z3 AST-like objects have a `ctx` attribute and `translate` method
+        try:
+            if hasattr(obj, "ctx") and hasattr(obj, "translate"):
+                if obj.ctx != self.ctx:
+                    return obj.translate(self.ctx)
+                return obj
+        except Exception:
+            # Be defensive: if anything goes wrong, fall back to returning obj
+            return obj
+
+        return obj
 
     def encode_initial_state(self):
         """!
@@ -473,6 +511,42 @@ class EncoderGrounded(Encoder):
             frame.append(z3.Implies(var_t1 != var_t2, who_can_change, ctx=self.ctx))
         
         return frame
+    
+    def encode_quality_metrics(self):
+        metrics = []
+        
+        if not hasattr(self.task, 'quality_metrics') or not self.task.quality_metrics:
+            return metrics
+        
+        for metric in self.task.quality_metrics:
+            metric_expr = metric.expression
+            z3_metric = self._expr_to_z3(metric_expr, 2)
+            
+            metrics.append({
+                'expression': z3_metric,
+                'z3_var': z3_metric
+            })
+        
+        return metrics
+
+    def get_optimization_objective(self, horizon):
+        if not hasattr(self.task, 'quality_metrics') or not self.task.quality_metrics:
+            return [], []
+        
+        minimize_objs = []
+        maximize_objs = []
+        for metric in self.task.quality_metrics:
+            metric_expr = metric.expression
+            final_t = 2 * horizon + 2
+            z3_metric = self._expr_to_z3(metric_expr, final_t)
+            if str(metric).startswith('minimize'):
+                minimize_objs.append(z3_metric)
+            elif str(metric).startswith('maximize'):
+                maximize_objs.append(z3_metric)
+            else:
+                raise ValueError(f"Unknown optimization direction for metric: {metric}")
+        
+        return minimize_objs, maximize_objs
 
     def _expr_to_z3(self, expr, t, c=None):
         """!
