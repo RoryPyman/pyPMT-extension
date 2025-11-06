@@ -21,9 +21,9 @@ class SMTSearch(Search):
             start_time = time.time()
             formula    = self.encoder.encode(self.horizon)
             context    = self.encoder.ctx
-
+            print(" Are we optimising: ", 'metrics' in formula)
             if not self.solver:
-                self.solver = z3.Solver(ctx=context) if 'objective' not in formula else z3.Optimize(ctx=context)
+                self.solver = z3.Solver(ctx=context) if 'metrics' not in formula else z3.Optimize(ctx=context)
             
             # deal with the initial state
             if self.horizon == 0:
@@ -36,14 +36,17 @@ class SMTSearch(Search):
             self.solver.add(reified_goal) # Add the goal
             del formula['goal']
 
-            # deal with the objective
-            if 'objective' in formula:
-                self.solver.minimize(formula['objective']) # type: ignore
-                del formula['objective']
-
+            if 'metrics' in formula:
+                minimize_objs, maximize_objs = self.encoder.get_optimization_objective(self.horizon)
+                for obj in minimize_objs:
+                    print(" Minimizing: ", obj)
+                    self.solver.minimize(obj)
+                for obj in maximize_objs:
+                    print(" Maximizing: ", obj)
+                    self.solver.maximize(obj)
             # We assert the rest of formulas to the solver
-            for _, v in formula.items():
-                if v is not None:
+            for key, v in formula.items():
+                if v is not None and key != 'metrics':
                     self.solver.add(v)
 
             # Check for satisfiability assuming the goal
@@ -60,6 +63,8 @@ class SMTSearch(Search):
                 log(f'Z3 statistics:\n{self.solver.statistics()}', 4)
                 self.solution = self.encoder.extract_plan(self.solver.model(), self.horizon)
                 break
+            
+        print("SOLUTION: ",self.solution)
         return self.solution
 
     def dump_smtlib_to_file(self, t, path):
