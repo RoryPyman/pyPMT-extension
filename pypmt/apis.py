@@ -28,11 +28,11 @@ def compile(task: Problem, compilationlist: list):
     """
     names = [name for name, _ in compilationlist]
     compilationkinds = [kind for _, kind in compilationlist]
+    compilationlist += [['intention_remover', CompilationKind.INTENTIONAL_REMOVING]]
     print(f"Applying the following compilations: {list(zip(names, compilationkinds))}")
     task = DeleteThenSetRemover().compile(task).problem # just remove delete-then-set effects
     with Compiler(names=names, compilation_kinds=compilationkinds) as compiler:
         compiled_task = compiler.compile(task)
-
     return compiled_task
 
 def check_compatibility(encoder, compilationlist:list):
