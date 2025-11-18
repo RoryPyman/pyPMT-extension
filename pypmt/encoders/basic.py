@@ -52,7 +52,8 @@ class EncoderGrounded(Encoder):
         self.parallel = parallel
         # cache all fluents in the problem.
         self.all_fluents = flattern_list([list(get_all_fluent_exp(task, f)) for f in task.fluents])
-
+        self._initialize_fluents(task, self.all_fluents)
+        self.all_fluents = flattern_list([list(get_all_fluent_exp(task, f)) for f in task.fluents])
         # The main idea here is that we have lists representing
         # the layers (steps) containing the respective variables
 
@@ -257,6 +258,16 @@ class EncoderGrounded(Encoder):
         where all the "raw" formulas are stored. Those will later be used by 
         the encode function.
         """
+        
+        # Check for intentional fluents
+        intentional_fluents = [
+            f for f in self.task.fluents 
+            if 'intends' in f.name or 'delegated' in f.name
+        ]
+        print(f"Intentional fluents found: {len(intentional_fluents)}")
+        for f in intentional_fluents:
+            print(f"  - {f.name}: {f.signature}")
+        
         # create vars for first transition
         self.create_variables(0)
         self.create_variables(1)
