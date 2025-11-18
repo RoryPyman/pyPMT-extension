@@ -19,6 +19,8 @@ def str_repr(f, t=None):
                 s += str(fluent_arg)
             elif node_type == OperatorKind.NOT:
                 s += str_repr(fluent_arg.args[0])
+            elif node_type == OperatorKind.FLUENT_EXP:
+                s += str_repr(fluent_arg)
             else:
                 s += f"_{fluent_arg.constant_value()}"
             
