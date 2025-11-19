@@ -21,7 +21,6 @@ class SMTSearch(Search):
             start_time = time.time()
             formula    = self.encoder.encode(self.horizon)
             context    = self.encoder.ctx
-            print(" Are we optimising: ", 'metrics' in formula)
             if not self.solver:
                 self.solver = z3.Solver(ctx=context) if 'metrics' not in formula else z3.Optimize(ctx=context)
             
