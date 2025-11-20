@@ -12,7 +12,7 @@ def str_repr(f, t=None):
     """
     if isinstance(f, FNode) and f.is_fluent_exp(): # for fluents
         s = f.fluent().name
-        if (s != 'believes'):
+        if (s != 'believes' and s != 'intends'):
             # we concatenate the parameters to the name
             for fluent_arg in f.args:
                 node_type = fluent_arg.node_type
@@ -24,9 +24,23 @@ def str_repr(f, t=None):
                     s += str_repr(fluent_arg)
                 else:
                     s += f"_{fluent_arg.constant_value()}"
-        else:
+        elif s == 'believes':
             # beliefs
             s += f"_{f.args[1].fluent().name}"
+            s += "_" + str(f.args[0])
+            for fluent_arg in f.args[1].args:
+                node_type = fluent_arg.node_type
+                if node_type == OperatorKind.VARIABLE_EXP:
+                    s += str(fluent_arg)
+                elif node_type == OperatorKind.NOT:
+                    s += str_repr(fluent_arg.args[0])
+                elif node_type == OperatorKind.FLUENT_EXP:
+                    s += str_repr(fluent_arg)
+                else:
+                    s += f"_{fluent_arg.constant_value()}"
+        elif s == 'intends':
+            # intentions
+            s += f"-{f.args[1].fluent().name}"
             s += "_" + str(f.args[0])
             for fluent_arg in f.args[1].args:
                 node_type = fluent_arg.node_type
