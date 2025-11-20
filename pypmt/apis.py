@@ -26,18 +26,15 @@ def compile(task: Problem, compilationlist: list):
     Returns:
         CompiledTask: The compiled task object.
     """
-    # compilationlist += [['intention_remover', CompilationKind.INTENTIONAL_REMOVING]]
     
     # We have changed the compilationlist.
     compilationlist = [ 
         ('up_quantifiers_remover', CompilationKind.QUANTIFIERS_REMOVING), 
         # ('up_disjunctive_conditions_remover', CompilationKind.DISJUNCTIVE_CONDITIONS_REMOVING),
-        ('up_grounder', CompilationKind.GROUNDING), 
-        ('intention_remover', CompilationKind.INTENTIONAL_REMOVING)
+        ('belief_remover', CompilationKind.BELIEF_REMOVING),
+        ('intention_remover', CompilationKind.INTENTIONAL_REMOVING),
+        ('up_grounder', CompilationKind.GROUNDING),
     ]
-
-    #  
-    
     
     names = [name for name, _ in compilationlist]
     compilationkinds = [kind for _, kind in compilationlist]
@@ -45,12 +42,7 @@ def compile(task: Problem, compilationlist: list):
     task = DeleteThenSetRemover().compile(task).problem # just remove delete-then-set effects
     with Compiler(names=names, compilation_kinds=compilationkinds) as compiler:
         compiled_task = compiler.compile(task)
-    for f in compiled_task.problem._intendable_fluents:
-        print("OBJECT:", f)
-        print(" node_type:", getattr(f, "node_type", None))
-        print(" repr:", repr(f))
-        print(" children:", getattr(f, "args", None))
-        print("-----")
+    print(f"FINAL PROBLEM ACTIONS: {compiled_task.problem}")
     return compiled_task
 
 def check_compatibility(encoder, compilationlist:list):
