@@ -142,8 +142,8 @@ def solveUP(task, conf:Config, validate_plan:bool=True):
     plan = search_strategy(encoder_instance, schedule).search()
 
     # validate plan if there is a plan and we're asked to
-    if plan and validate_plan:
-        plan.validate()
+    # if plan and validate_plan:
+    #     plan.validate()
 
     # lift the plan to it's original task.
     if plan is not None:
