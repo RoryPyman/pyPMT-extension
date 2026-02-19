@@ -12,8 +12,9 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.9"
 z3-solver = "^4.11.0.0"
-unified-planning = { path = "../unified-planning", develop = true }
+
 up-pyperplan = "^1.1.0"
+up-fast-downward = "*"
 networkx = "^3.0"
 numpy = "^1.26"
 
