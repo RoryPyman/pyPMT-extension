@@ -63,7 +63,6 @@ class SMTSearch(Search):
                 self.solution = self.encoder.extract_plan(self.solver.model(), self.horizon)
                 break
             
-        print("SOLUTION: ",self.solution)
         return self.solution
 
     def dump_smtlib_to_file(self, t, path):

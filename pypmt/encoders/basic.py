@@ -259,15 +259,6 @@ class EncoderGrounded(Encoder):
         the encode function.
         """
         
-        # Check for intentional fluents
-        intentional_fluents = [
-            f for f in self.task.fluents 
-            if 'intends' in f.name or 'delegated' in f.name
-        ]
-        print(f"Intentional fluents found: {len(intentional_fluents)}")
-        for f in intentional_fluents:
-            print(f"  - {f.name}: {f.signature}")
-        
         # create vars for first transition
         self.create_variables(0)
         self.create_variables(1)
