@@ -26,14 +26,14 @@ def compile(task: Problem, compilationlist: list):
     Returns:
         CompiledTask: The compiled task object.
     """
-    
     # We have changed the compilationlist.
-    compilationlist = [ 
-        ('up_quantifiers_remover', CompilationKind.QUANTIFIERS_REMOVING), 
+    compilationlist = [  
         # ('up_disjunctive_conditions_remover', CompilationKind.DISJUNCTIVE_CONDITIONS_REMOVING),
-        ('belief_remover', CompilationKind.BELIEF_REMOVING),
+        #('belief_remover', CompilationKind.BELIEF_REMOVING),
         ('intention_remover', CompilationKind.INTENTIONAL_REMOVING),
-        ('up_grounder', CompilationKind.GROUNDING),
+        ('up_quantifiers_remover', CompilationKind.QUANTIFIERS_REMOVING),
+        # ('up_grounder', CompilationKind.GROUNDING),
+        ('fast-downward-reachability-grounder', CompilationKind.GROUNDING)
     ]
     
     names = [name for name, _ in compilationlist]
@@ -42,7 +42,6 @@ def compile(task: Problem, compilationlist: list):
     task = DeleteThenSetRemover().compile(task).problem # just remove delete-then-set effects
     with Compiler(names=names, compilation_kinds=compilationkinds) as compiler:
         compiled_task = compiler.compile(task)
-    print(f"FINAL PROBLEM ACTIONS: {compiled_task.problem}")
     return compiled_task
 
 def check_compatibility(encoder, compilationlist:list):
@@ -113,11 +112,11 @@ def generate_schedule(conf:Config):
     ub = conf.get("ub")
     return list(range(0, ub))
 
-def solveFile(domainfile:str, problemfile:str, conf:Config, validate_plan:bool=True):
+def solveFile(domainfile:str, problemfile:str, conf:Config, validate_plan:bool=True, annotate:bool=False):
     task = PDDLReader().parse_problem(domainfile, problemfile)
-    return solveUP(task, conf, validate_plan)
+    return solveUP(task, conf, validate_plan, annotate)
 
-def solveUP(task, conf:Config, validate_plan:bool=True):
+def solveUP(task, conf:Config, validate_plan:bool=True, annotate:bool=False):
     """!
     Basic entry point to start searching
     Beforehand the config has to be set by doing for example:
@@ -128,8 +127,10 @@ def solveUP(task, conf:Config, validate_plan:bool=True):
 
     or passing them as parameters:
     from pypmt.apis import solveUP
-    sol = solveUP(domainfile, problemfile, "qfuf") 
+    sol = solveUP(domainfile, problemfile, "qfuf")
     sol = solveUP(domainfile, problemfile, "seq")
+
+    Pass annotate=True to include intention/delegation reasoning in the plan output.
     """
     set_global_config(conf)
     encoder = global_config.get("encoder")
@@ -145,21 +146,33 @@ def solveUP(task, conf:Config, validate_plan:bool=True):
     # if plan and validate_plan:
     #     plan.validate()
 
-    # lift the plan to it's original task.
+    # lift the plan back to the original task's action space.
     if plan is not None:
+        # Capture compiled (grounded) action names before lifting so that
+        # annotate mode can display the intention/delegation reasoning.
+        plan.compiled_names = [ai.action.name for ai in plan.plan.actions]
         plan.plan = plan.plan.replace_action_instances(compiled_task.map_back_action_instance)
+        plan._plan_str = None  # invalidate the pre-lift cached string
+        plan.task = task        # point the renderer at the original (pre-compilation) task
 
     if plan is None:
         log('No solution found', 1)
         return None
     elif plan.isvalid:
         log('The plan is valid', 1)
-        log(f"Plan length: {len(plan)}\n{plan}", 1)
+        _log_plan(plan, annotate)
         return plan
     else:
         log(f'The plan is INVALID! {plan.validation_fail_reason}', 1)
-        log(f"Plan length: {len(plan)}\n{plan}", 1)
+        _log_plan(plan, annotate)
         return None
+
+def _log_plan(plan, annotate: bool):
+    """Log the plan, with or without intention annotations."""
+    if annotate:
+        log(f"Plan length: {len(plan)}\n{plan.annotated_str()}", 1)
+    else:
+        log(f"Plan length: {len(plan)}\n{plan}", 1)
 
 def dump_smtlib(domainfile:str, problemfile:str, conf:Config):
     """!
