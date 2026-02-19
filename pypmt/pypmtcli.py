@@ -93,6 +93,17 @@ def create_parser():
     parser_solve = subparsers.add_parser('solve', help='Try to solve a given planning problem')
     add_shared_arguments(parser_solve)
     parser_solve.add_argument('--bound', type=int, default=100, help='Upper bound.')
+    parser_solve.add_argument(
+        '-a', '--annotate',
+        action='store_true',
+        default=False,
+        help=(
+            'Annotate each compiled action in the plan output with the '
+            'intention/delegation reasoning that triggered it '
+            '(e.g. "; because: traveller intends married-to"). '
+            'Has no effect on non-intentional domains.'
+        ),
+    )
 
     return parser
 
@@ -116,9 +127,9 @@ def dump_encoding(domain, problem, conf):
     """!  Given a domain, problem and config, dump a SMTLIB2 file """
     dump_smtlib(domain, problem, conf)
 
-def solve_problem(domain, problem, conf):
+def solve_problem(domain, problem, conf, annotate=False):
     """!  Given a domain, problem and config, try to solve the planning problem """
-    plan = solveFile(domain, problem, conf)
+    plan = solveFile(domain, problem, conf, annotate=annotate)
 
 def main(args=None):
     """ Entry point """
@@ -143,7 +154,7 @@ def main(args=None):
     if args.command == 'dump':
         dump_encoding(args.domain, args.problem, conf)
     elif args.command == 'solve':
-        solve_problem(args.domain, args.problem, conf)
+        solve_problem(args.domain, args.problem, conf, annotate=args.annotate)
     else:
         parser.print_help()
 

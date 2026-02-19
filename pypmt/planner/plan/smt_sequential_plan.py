@@ -12,6 +12,7 @@ class SMTSequentialPlan:
         self.plan = plan
         self.task = task
         self._plan_str = None
+        self.compiled_names = None  # set by solveUP before lifting; used for --annotate
 
     def __len__(self):
         """!
@@ -32,13 +33,51 @@ class SMTSequentialPlan:
 
     def __str__(self):
         """!
-        Returns the plan as a stringin PDDL format.
+        Returns the plan as a string in PDDL format.
 
         @return the plan as a string.
         """
         if self._plan_str is None:
             self._plan_str = PDDLWriter(self.task).get_plan(self.plan)
         return self._plan_str
+
+    def annotated_str(self):
+        """!
+        Returns the plan with intention/delegation annotations.
+
+        For each action that was produced by the intention compiler
+        (i.e. its compiled name contains '-because-'), a comment line
+        is appended showing the original reasoning, e.g.:
+            (travel aladdin castle mountain)
+              ; because: traveller intends married-to
+
+        @return the annotated plan as a string.
+        """
+        if not self.compiled_names:
+            return str(self)
+
+        def _pddl_action(ai):
+            name = ai.action.name
+            params = " ".join(str(p) for p in ai.actual_parameters)
+            return f"({name} {params})" if params else f"({name})"
+
+        def _annotation(compiled_name):
+            # compiled_name is the grounded action name, e.g.
+            #   "travel-because-traveller-intends-married-to_aladdin_castle_mountain"
+            # strip grounding suffix (everything after the first '_')
+            base = compiled_name.split("_")[0] if "_" in compiled_name else compiled_name
+            if "-because-" not in base:
+                return ""
+            _, reasoning = base.split("-because-", 1)
+            return f"  ; because: {reasoning.replace('-', ' ')}"
+
+        lines = []
+        for action_instance, compiled_name in zip(self.plan.actions, self.compiled_names):
+            lines.append(_pddl_action(action_instance))
+            note = _annotation(compiled_name)
+            if note:
+                lines.append(note)
+        return "\n".join(lines)
     
     def __hash__(self) -> int:
         return hash(str(self))
